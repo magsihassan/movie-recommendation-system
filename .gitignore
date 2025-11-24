@@ -1,48 +1,34 @@
-# Python
-__pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-dist/
-build/
-
-# Jupyter
-.ipynb_checkpoints
-*.ipynb
-
-# Data
+# ===========================
+# Ignore datasets and large files
+# ===========================
 data/
-*.csv
-*.tsv
-*.parquet
-
-# Environment
-.env
-.environment.yml
-
-# OS
-.DS_Store
-Thumbs.db
-
-# VSCode / IDE
-.vscode/
-.idea/
-
-# Dataset
 data/ml-1m/
 data/ml-sample/
-data/*
 
-
-# Ignore model files (optional)
+# Ignore trained model files
 models/
 *.pkl
 *.h5
 *.pt
+*.joblib
 
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Logs
+# Ignore virtual environments
+.env/
+.venv/
+env/
+movie_recommender/
+movie-recsys/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore logs
 *.log
 
-# Virtualenvs
-venv/
