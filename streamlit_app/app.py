@@ -1,10 +1,14 @@
 import sys
 import os
+import random
+import requests
 import streamlit as st
 import pandas as pd
-import random
+import re
 
-# Add project root to path
+# -------------------------------------------------------------------
+# PATH SETUP
+# -------------------------------------------------------------------
 current_dir = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(current_dir)
 sys.path.insert(0, ROOT_DIR)
@@ -16,538 +20,599 @@ except ImportError as e:
     st.error(f"Import error: {e}")
     st.stop()
 
-# Initialize recommender
+# -------------------------------------------------------------------
+# LOAD MODELS + DATA
+# -------------------------------------------------------------------
 @st.cache_resource
 def load_recommender():
     return MovieRecommender()
 
 recommender = load_recommender()
 
-# Load movie data
 @st.cache_data
 def load_movie_data():
     return load_movies()
 
 movies_df = load_movie_data()
 
-# Streamlit UI with enhanced movie theme
+# -------------------------------------------------------------------
+# TMDB POSTER HELPER (OPTIONAL)
+# -------------------------------------------------------------------
+TMDB_API_KEY = "733a194c5a85ab47618704e56b14ebff"
+
+# Allow Streamlit secrets or env variables to override only if they exist.
+try:
+    TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", TMDB_API_KEY)
+except Exception:
+    TMDB_API_KEY = os.getenv("TMDB_API_KEY", TMDB_API_KEY)
+
+# -----------------------------------------------------------
+# 🔥 TMDB TITLE NORMALIZATION + BEST-MATCH POSTER FETCH
+# -----------------------------------------------------------
+
+def normalize_title(movie_title: str):
+    """
+    MovieLens → TMDB title cleanup
+    Handles:
+    - Removing (YEAR)
+    - Converting 'Title, The' → 'The Title'
+    - Extracting release year
+    """
+    title = movie_title.strip()
+
+    # Extract year
+    year_match = re.search(r"\((\d{4})\)", title)
+    year = int(year_match.group(1)) if year_match else None
+
+    # Remove (YEAR)
+    title = re.sub(r"\(\d{4}\)", "", title).strip()
+
+    # Handle ", The" / ", A" / ", An"
+    if ", The" in title:
+        title = "The " + title.replace(", The", "")
+    if ", A" in title:
+        title = "A " + title.replace(", A", "")
+    if ", An" in title:
+        title = "An " + title.replace(", An", "")
+
+    return title.strip(), year
+
+
+@st.cache_data(show_spinner=False)
+def get_poster_url(movie_title: str):
+    """Return best-match TMDB poster URL for a MovieLens movie."""
+    if not TMDB_API_KEY:
+        return None
+
+    clean_title, year = normalize_title(movie_title)
+
+    try:
+        params = {"api_key": TMDB_API_KEY, "query": clean_title}
+        if year:
+            params["year"] = year  # improves accuracy
+
+        resp = requests.get(
+            "https://api.themoviedb.org/3/search/movie",
+            params=params,
+            timeout=6,
+        )
+        resp.raise_for_status()
+
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+
+        # Pick best match by vote_count + popularity
+        results = sorted(
+            results,
+            key=lambda x: (x.get("vote_count", 0), x.get("popularity", 0)),
+            reverse=True,
+        )
+        best = results[0]
+
+        poster_path = best.get("poster_path")
+        if not poster_path:
+            return None
+
+        return f"https://image.tmdb.org/t/p/w342{poster_path}"
+
+    except Exception:
+        return None
+
+# -------------------------------------------------------------------
+# PAGE CONFIG
+# -------------------------------------------------------------------
 st.set_page_config(
-    page_title="CineAI - Smart Movie Recommendations",
+    page_title="Cinematic AI",
     layout="wide",
     page_icon="🎬",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="collapsed",
 )
 
-# Custom CSS for futuristic movie theme
-st.markdown("""
+# -------------------------------------------------------------------
+# GLOBAL CSS  (full, with glow + Netflix row)
+# -------------------------------------------------------------------
+st.markdown(
+    """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Exo+2:wght@300;400;500;600&display=swap');
-    
-    .main {
-        background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #16213e 100%);
-        color: #ffffff;
-        font-family: 'Exo 2', sans-serif;
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Exo+2:wght@300;400;600&display=swap');
+
+body {
+    background: radial-gradient(circle at top, #1a1a2e 0, #0b0c10 45%, #000 100%);
+    color: #ffffff;
+    font-family: 'Exo 2', sans-serif;
+}
+
+.app-container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+/* MAIN HEADER */
+.neon-header {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 3.5rem;
+    font-weight: 800;
+    color: #4ecdc4;
+    text-shadow:
+        0 0 8px rgba(78,205,196,0.7),
+        0 0 18px rgba(78,205,196,0.9),
+        0 0 30px rgba(78,205,196,0.7);
+    letter-spacing: 2px;
+    animation: hdr-pulse 3s ease-in-out infinite alternate;
+}
+
+.neon-subtitle {
+    color: #b0b0b0;
+    font-size: 1.1rem;
+}
+
+@keyframes hdr-pulse {
+    0% { text-shadow: 0 0 6px rgba(78,205,196,0.5); }
+    100% { text-shadow: 0 0 24px rgba(78,205,196,0.9); }
+}
+
+/* SECTION HEADER */
+.section-header {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.7rem;
+    color: #4ecdc4;
+    text-align: center;
+    margin: 1.5rem 0 1rem 0;
+    text-shadow: 0 0 8px rgba(78,205,196,0.8);
+}
+
+/* MODEL CARDS */
+.model-card {
+    background: rgba(16, 24, 40, 0.9);
+    border-radius: 18px;
+    border: 1px solid rgba(148,163,184,0.4);
+    padding: 1.2rem 1.3rem;
+    margin-bottom: 1.1rem;
+    backdrop-filter: blur(14px);
+    box-shadow:
+        0 0 0 1px rgba(15,23,42,0.7),
+        0 12px 35px rgba(15,23,42,0.95);
+    transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+    transform-style: preserve-3d;
+    transform-origin: center;
+}
+
+.model-card:hover {
+    transform: translateY(-6px) rotate3d(1, -1, 0, 6deg);
+    box-shadow:
+        0 0 0 1px rgba(94,234,212,0.4),
+        0 18px 55px rgba(56,189,248,0.55);
+    border-color: #4ecdc4;
+    cursor: pointer;
+}
+
+.model-card.selected {
+    border-color: #ff6b6b;
+    box-shadow:
+        0 0 0 1px rgba(248,113,113,0.6),
+        0 18px 60px rgba(248,113,113,0.85);
+    animation: neon-pulse 2.2s ease-in-out infinite alternate;
+}
+
+@keyframes neon-pulse {
+    0% {
+        box-shadow:
+            0 0 0 1px rgba(248,113,113,0.4),
+            0 14px 40px rgba(248,113,113,0.5);
     }
-    
-    .title-container {
-        background: linear-gradient(90deg, #ff6b6b 0%, #4ecdc4 50%, #45b7d1 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        padding: 2rem 0;
-        margin-bottom: 2rem;
+    100% {
+        box-shadow:
+            0 0 0 2px rgba(248,113,113,0.7),
+            0 18px 64px rgba(248,113,113,0.9);
     }
-    
-    .main-title {
-        font-family: 'Orbitron', monospace;
-        font-size: 4rem !important;
-        font-weight: 900;
-        margin-bottom: 0.5rem;
-        text-shadow: 0 0 30px rgba(78, 205, 196, 0.5);
-        letter-spacing: 3px;
-    }
-    
-    .subtitle {
-        font-family: 'Exo 2', sans-serif;
-        font-size: 1.5rem !important;
-        font-weight: 300;
-        color: #b0b0b0;
-        margin-bottom: 2rem;
-    }
-    
-    .model-card {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 15px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        transition: all 0.3s ease;
-        cursor: pointer;
-    }
-    
-    .model-card:hover {
-        transform: translateY(-5px);
-        border-color: #4ecdc4;
-        box-shadow: 0 10px 30px rgba(78, 205, 196, 0.2);
-    }
-    
-    .model-card.selected {
-        border-color: #ff6b6b;
-        background: rgba(255, 107, 107, 0.1);
-    }
-    
-    .model-icon {
-        font-size: 2.5rem;
-        margin-bottom: 1rem;
-    }
-    
-    .model-title {
-        font-family: 'Orbitron', monospace;
-        font-size: 1.3rem;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-        color: #4ecdc4;
-    }
-    
-    .model-desc {
-        font-size: 0.9rem;
-        color: #b0b0b0;
-        line-height: 1.4;
-    }
-    
-    .recommendation-card {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        transition: all 0.3s ease;
-    }
-    
-    .recommendation-card:hover {
-        transform: translateX(5px);
-        border-color: #45b7d1;
-        box-shadow: 0 5px 20px rgba(69, 183, 209, 0.3);
-    }
-    
-    .movie-title {
-        font-family: 'Exo 2', sans-serif;
-        font-size: 1.4rem;
-        font-weight: 600;
-        color: #ffffff;
-        margin-bottom: 0.5rem;
-    }
-    
-    .movie-genres {
-        font-size: 0.9rem;
-        color: #4ecdc4;
-        margin-bottom: 0.5rem;
-    }
-    
-    .movie-rating {
-        font-family: 'Orbitron', monospace;
-        font-size: 1.1rem;
-        color: #ffd700;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    
-    .stButton>button {
-        background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-        color: white;
-        border: none;
-        border-radius: 25px;
-        padding: 0.8rem 2rem;
-        font-family: 'Exo 2', sans-serif;
-        font-weight: 600;
-        font-size: 1.1rem;
-        transition: all 0.3s ease;
-        width: 100%;
-    }
-    
-    .stButton>button:hover {
-        transform: scale(1.05);
-        box-shadow: 0 5px 20px rgba(78, 205, 196, 0.4);
-    }
-    
-    .section-header {
-        font-family: 'Orbitron', monospace;
-        font-size: 1.8rem;
-        font-weight: 600;
-        color: #4ecdc4;
-        margin: 2rem 0 1rem 0;
-        text-align: center;
-        text-shadow: 0 0 10px rgba(78, 205, 196, 0.3);
-    }
-    
-    .stRadio>div {
-        display: flex;
-        gap: 1rem;
-        justify-content: center;
-    }
-    
-    .stRadio>div>label {
-        background: rgba(255, 255, 255, 0.05) !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 10px !important;
-        padding: 1rem !important;
-        color: white !important;
-        transition: all 0.3s ease !important;
-    }
-    
-    .stRadio>div>label:hover {
-        border-color: #4ecdc4 !important;
-    }
-    
-    .stRadio>div>label[data-baseweb="radio"]>div:first-child {
-        border-color: #4ecdc4 !important;
-    }
-    
-    .footer {
-        text-align: center;
-        margin-top: 3rem;
-        padding: 2rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
-        color: #888;
-        font-size: 0.9rem;
-    }
-    
-    .neon-text {
-        color: #4ecdc4;
-        text-shadow: 0 0 10px #4ecdc4, 0 0 20px #4ecdc4, 0 0 30px #4ecdc4;
-    }
-    
-    .pulse {
-        animation: pulse 2s infinite;
-    }
-    
-    @keyframes pulse {
-        0% { transform: scale(1); }
-        50% { transform: scale(1.05); }
-        100% { transform: scale(1); }
-    }
+}
+
+.model-icon {
+    font-size: 2.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.model-title {
+    font-family: 'Orbitron';
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #e5e7eb;
+    margin-bottom: 0.2rem;
+}
+
+.model-desc {
+    font-size: 0.9rem;
+    color: #9ca3af;
+}
+
+/* HORIZONTAL RECOMMENDATION ROW */
+.rec-row-wrapper {
+    position: relative;
+    margin-top: 1rem;
+}
+
+.rec-row {
+    display: flex;
+    overflow-x: auto;
+    gap: 1rem;
+    padding-bottom: 0.5rem;
+    scroll-behavior: smooth;
+}
+
+.rec-row::-webkit-scrollbar {
+    height: 8px;
+}
+.rec-row::-webkit-scrollbar-track {
+    background: rgba(15,23,42,0.9);
+}
+.rec-row::-webkit-scrollbar-thumb {
+    background: linear-gradient(90deg, #4ecdc4, #ff6b6b);
+    border-radius: 999px;
+}
+
+.rec-card {
+    flex: 0 0 300px;
+    max-width: 220px;
+    height: 500px;  
+    background: radial-gradient(circle at top left, rgba(56,189,248,0.16), rgba(15,23,42,0.96));
+    border-radius: 16px;
+    border: 1px solid rgba(148,163,184,0.4);
+    overflow: hidden;
+    box-shadow: 0 14px 40px rgba(15,23,42,0.9);
+    backdrop-filter: blur(10px);
+    display: flex;
+    flex-direction: column;
+}
+
+.rec-poster {
+    width: 100%;
+    height: 800px;
+    background: linear-gradient(135deg, #ff6b6b, #4ecdc4);
+    overflow: hidden;
+}
+
+.rec-poster img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.rec-body {
+    padding: 0.7rem 0.75rem 0.8rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 100%;
+}
+
+.movie-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #e5e7eb;
+    margin-bottom: 0.2rem;
+}
+
+.movie-genres {
+    font-size: 0.78rem;
+    color: #67e8f9;
+    margin-bottom: 0.3rem;
+}
+
+.movie-rating {
+    font-family: 'Orbitron';
+    font-size: 0.85rem;
+    color: #facc15;
+}
+
+.movie-meta-sub {
+    font-size: 0.7rem;
+    color: #9ca3af;
+    text-align: right;
+}
+
+.pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0.1rem 0.5rem;
+    font-size: 0.7rem;
+    background: rgba(15,23,42,0.9);
+    color: #e5e7eb;
+    border: 1px solid rgba(148,163,184,0.6);
+}
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# Header with animated title
-st.markdown("""
-<div class="title-container">
-    <div class="main-title">🎬 CINEMATIC AI</div>
-    <div class="subtitle">Your Personal Movie Discovery Engine Powered by Machine Learning</div>
+# -------------------------------------------------------------------
+# HEADER
+# -------------------------------------------------------------------
+st.markdown(
+    """
+<div class="app-container" style="text-align:center; margin-bottom: 1.5rem;">
+    <div class="neon-header">CINEMATIC AI</div>
+    <div class="neon-subtitle">
+        Hyper-visual Movie Discovery Powered by Hybrid Machine Learning
+    </div>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# Create columns for main content
+# -------------------------------------------------------------------
+# LAYOUT
+# -------------------------------------------------------------------
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.markdown('<div class="section-header">🤖 SELECT AI MODEL</div>', unsafe_allow_html=True)
-    
-    # Model selection with enhanced cards
-    model_option = st.radio(
-        "",
-        ["Content-Based Filtering", "Collaborative Filtering", "Hybrid Intelligence"],
-        key="model_selector",
-        label_visibility="collapsed"
+    st.markdown(
+        '<div class="section-header">🤖 SELECT AI MODEL</div>',
+        unsafe_allow_html=True,
     )
-    
-    # Model descriptions
-    st.markdown("""
-    <div style='margin-top: 2rem;'>
-        <div class="model-card">
-            <div class="model-icon">🎯</div>
-            <div class="model-title">CONTENT-BASED AI</div>
-            <div class="model-desc">Analyzes movie content, genres, and themes to find films with similar characteristics to your favorites.</div>
-        </div>
-        
-        <div class="model-card">
-            <div class="model-icon">👥</div>
-            <div class="model-title">COLLABORATIVE AI</div>
-            <div class="model-desc">Learns from millions of user ratings to predict what you'll love based on similar taste profiles.</div>
-        </div>
-        
-        <div class="model-card">
-            <div class="model-icon">🚀</div>
-            <div class="model-title">HYBRID INTELLIGENCE</div>
-            <div class="model-desc">Combines both approaches for the most accurate and diverse movie recommendations.</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
 
+    MODEL_OPTIONS = [
+        "Content-Based Filtering",
+        "Collaborative Filtering",
+        "Hybrid Intelligence",
+    ]
+
+    if "model_selector" not in st.session_state:
+        st.session_state.model_selector = MODEL_OPTIONS[0]
+
+    def render_model_card(model_name: str, icon: str, title: str, desc: str):
+        is_selected = st.session_state.model_selector == model_name
+        css = "model-card selected" if is_selected else "model-card"
+
+        # Button controls state (hidden label text)
+        clicked = st.button(title, key=f"btn_{model_name}")
+        if clicked:
+            st.session_state.model_selector = model_name
+
+        st.markdown(
+            f'<div class="{css}">'
+            f'<div class="model-icon">{icon}</div>'
+            f'<div class="model-title">{title}</div>'
+            f'<div class="model-desc">{desc}</div>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    render_model_card(
+        "Content-Based Filtering",
+        "🎯",
+        "CONTENT-BASED AI",
+        "Find movies similar to your favorites using content, genres, and themes.",
+    )
+    render_model_card(
+        "Collaborative Filtering",
+        "👥",
+        "COLLABORATIVE AI",
+        "Predict what you'll love based on users with similar rating patterns.",
+    )
+    render_model_card(
+        "Hybrid Intelligence",
+        "🚀",
+        "HYBRID INTELLIGENCE",
+        "Fuse content similarity and collaborative patterns for maximum accuracy.",
+    )
+
+    model_option = st.session_state.model_selector
+
+# -------------------------------------------------------------------
+# RIGHT COLUMN – INPUTS & SELECTION GALLERY
+# -------------------------------------------------------------------
 with col2:
-    st.markdown('<div class="section-header">🎭 YOUR MOVIE PREFERENCES</div>', unsafe_allow_html=True)
-    
-    # Dynamic input sections based on model selection
+    st.markdown(
+        '<div class="section-header">🎭 YOUR MOVIE PREFERENCES</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Movies selection
     if model_option in ["Content-Based Filtering", "Hybrid Intelligence"]:
-        st.markdown("**🎥 SELECT MOVIES YOU LOVE**")
         movie_titles = movies_df["title"].astype(str).tolist()
         selected_movies = st.multiselect(
-            "Choose movies that match your taste:",
+            "🎥 Movies you already enjoy:",
             movie_titles,
-            placeholder="Search for movies...",
             max_selections=5,
-            label_visibility="collapsed"
+            placeholder="Search movies...",
         )
-        
-        # Show movie posters concept
-        if selected_movies:
-            st.markdown("**Your Selection:**")
-            cols = st.columns(len(selected_movies))
-            for idx, (col, movie) in enumerate(zip(cols, selected_movies)):
-                with col:
-                    # Generate a random "poster" color for visual appeal
-                    colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57']
-                    color = colors[idx % len(colors)]
-                    st.markdown(f"""
-                    <div style='
-                        background: {color};
-                        border-radius: 10px;
-                        padding: 1rem;
-                        text-align: center;
-                        color: white;
-                        font-weight: bold;
-                        margin: 0.2rem;
-                        min-height: 80px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                    '>
-                        {movie[:25]}{'...' if len(movie) > 25 else ''}
-                    </div>
-                    """, unsafe_allow_html=True)
+    else:
+        selected_movies = None
 
+    # User ID
     if model_option in ["Collaborative Filtering", "Hybrid Intelligence"]:
-        st.markdown("**👤 YOUR PROFILE**")
-        user_id = st.slider(
-            "Select Your User Profile:",
+        user_id = st.number_input(
+            "👤 User ID (MovieLens):",
             min_value=1,
             max_value=6040,
-            value=random.randint(1, 100),
-            help="Different profiles have different movie taste patterns"
+            value=1,
+            step=1,
         )
-        
-        # Show user's taste profile
-        try:
-            user_ratings = recommender.ratings_df[recommender.ratings_df['userId'] == user_id]
-            if not user_ratings.empty:
-                avg_rating = user_ratings['rating'].mean()
-                rating_count = len(user_ratings)
-                st.markdown(f"""
-                <div style='
-                    background: rgba(255, 255, 255, 0.05);
-                    border-radius: 10px;
-                    padding: 1rem;
-                    margin: 1rem 0;
-                '>
-                    <div style='color: #4ecdc4; font-weight: bold;'>Profile Analysis:</div>
-                    <div>🎯 Average Rating: <span style='color: #ffd700;'>{avg_rating:.1f}/5</span></div>
-                    <div>📊 Movies Rated: <span style='color: #4ecdc4;'>{rating_count}</span></div>
-                </div>
-                """, unsafe_allow_html=True)
-        except:
-            pass
+    else:
+        user_id = None
 
-    # Alpha slider for hybrid model
+    # Hybrid alpha
     if model_option == "Hybrid Intelligence":
-        st.markdown("**⚖️ AI BALANCE**")
         alpha = st.slider(
-            "Content vs Collaborative Intelligence:",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.6,
-            step=0.1,
-            help="Adjust how much weight to give to content analysis vs collaborative patterns"
+            "⚖️ Hybrid balance (Content ↔ Collaborative)",
+            0.0,
+            1.0,
+            0.6,
+            0.1,
         )
-        
-        # Visual indicator
-        content_width = int(alpha * 100)
-        collab_width = 100 - content_width
-        
-        st.markdown(f"""
-        <div style='
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            height: 20px;
-            margin: 1rem 0;
-            overflow: hidden;
-        '>
-            <div style='
-                background: linear-gradient(90deg, #ff6b6b, #4ecdc4);
-                height: 100%;
-                width: 100%;
-                display: flex;
-            '>
-                <div style='
-                    background: #ff6b6b;
-                    height: 100%;
-                    width: {content_width}%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    color: white;
-                    font-size: 0.7rem;
-                    font-weight: bold;
-                '>Content {content_width}%</div>
-                <div style='
-                    background: #4ecdc4;
-                    height: 100%;
-                    width: {collab_width}%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    color: white;
-                    font-size: 0.7rem;
-                    font-weight: bold;
-                '>Collaborative {collab_width}%</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    else:
+        alpha = None
 
-# Recommendation button with enhanced styling
-st.markdown("""
-<div style='text-align: center; margin: 2rem 0;'>
-    <div class="pulse">
-""", unsafe_allow_html=True)
+    # Selection gallery
+    if selected_movies:
+        st.markdown("**Your selection gallery**")
+        n = len(selected_movies)
+        cols_sel = st.columns(min(n, 4))
+        for idx, title in enumerate(selected_movies):
+            col = cols_sel[idx % len(cols_sel)]
+            with col:
+                poster_url = get_poster_url(title)
+                if poster_url:
+                    # FIX: show full poster, scaled down, not full-width
+                    st.image(poster_url, width=220)
+                else:
+                    colors = ["#ff6b6b", "#4ecdc4", "#45b7d1", "#facc15", "#a855f7"]
+                    color = colors[idx % len(colors)]
+                    truncated = title[:22] + ("…" if len(title) > 22 else "")
+                    col_html = (
+                        "<div style="
+                        f'"background:{color};'
+                        'border-radius:12px;'
+                        'height:140px;'
+                        'display:flex;'
+                        'align-items:center;'
+                        'justify-content:center;'
+                        'color:white;'
+                        'font-weight:600;'
+                        'text-align:center;'
+                        'padding:0.5rem;">'
+                        f"{truncated}"
+                        "</div>"
+                    )
+                    st.markdown(col_html, unsafe_allow_html=True)
 
-if st.button("🚀 GENERATE SMART RECOMMENDATIONS", key="recommend_btn"):
-    st.markdown("""
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Loading animation
-    with st.spinner("""
-        <div style='text-align: center;'>
-            <div style='color: #4ecdc4; font-size: 1.2rem; margin-bottom: 1rem;'>🧠 AI is analyzing patterns...</div>
-            <div style='color: #b0b0b0;'>Scanning 1 million ratings and movie metadata</div>
-        </div>
-    """):
+# -------------------------------------------------------------------
+# GENERATE RECOMMENDATIONS
+# -------------------------------------------------------------------
+st.markdown(
+    "<div style='text-align:center;margin-top:2rem;'>",
+    unsafe_allow_html=True,
+)
+
+if st.button("🚀 Generate Smart Recommendations", key="generate_btn"):
+    with st.spinner("🧠 Letting the AI binge-watch on your behalf..."):
+        recs = None
+        title_prefix = ""
+
         try:
             if model_option == "Content-Based Filtering":
+                title_prefix = "🎯 Content-Based Recommendations"
                 if not selected_movies:
-                    st.warning("🎬 Please select at least one movie to get content-based recommendations.")
+                    st.warning("Please select at least one movie.")
                 else:
-                    movie_id = movies_df[movies_df["title"] == selected_movies[0]]["movieId"].iloc[0]
-                    recommendations = recommender.content_recommend(movie_id, k=10)
-                    
-                    if not recommendations.empty:
-                        st.markdown('<div class="section-header">🎯 CONTENT-BASED RECOMMENDATIONS</div>', unsafe_allow_html=True)
-                        st.markdown(f"<div style='text-align: center; color: #b0b0b0; margin-bottom: 2rem;'>Movies similar to <span class='neon-text'>{selected_movies[0]}</span></div>", unsafe_allow_html=True)
-                        
-                        for idx, row in recommendations.iterrows():
-                            pred_rating = row.get('pred_rating', 4.0)
-                            similarity = row.get('similarity_score', 0)
-                            
-                            st.markdown(f"""
-                            <div class="recommendation-card">
-                                <div class="movie-title">{row['title']}</div>
-                                <div class="movie-genres">{row['genres']}</div>
-                                <div style='display: flex; justify-content: space-between; align-items: center;'>
-                                    <div class="movie-rating">
-                                        ⭐ {pred_rating:.2f}/5.00
-                                    </div>
-                                    <div style='color: #ff6b6b; font-size: 0.9rem;'>
-                                        🔍 Match: {similarity:.1%}
-                                    </div>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-            
+                    movie_id = movies_df.loc[
+                        movies_df["title"] == selected_movies[0], "movieId"
+                    ].iloc[0]
+                    recs = recommender.content_recommend(movie_id, k=10)
+
             elif model_option == "Collaborative Filtering":
-                recommendations = recommender.collaborative_recommend(user_id, k=10)
-                
-                if not recommendations.empty:
-                    st.markdown('<div class="section-header">👥 PERSONALIZED RECOMMENDATIONS</div>', unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align: center; color: #b0b0b0; margin-bottom: 2rem;'>Curated for User Profile <span class='neon-text'>#{user_id}</span></div>", unsafe_allow_html=True)
-                    
-                    for idx, row in recommendations.iterrows():
-                        pred_rating = row.get('pred_rating', 4.0)
-                        
-                        st.markdown(f"""
-                        <div class="recommendation-card">
-                            <div class="movie-title">{row['title']}</div>
-                            <div class="movie-genres">{row['genres']}</div>
-                            <div class="movie-rating">
-                                ⭐ {pred_rating:.2f}/5.00
-                                <span style='color: #4ecdc4; font-size: 0.8rem; margin-left: 1rem;'>
-                                    🤖 AI Confidence: {(pred_rating/5*100):.0f}%
-                                </span>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-            
-            else:  # Hybrid Intelligence
-                if not selected_movies:
-                    st.warning("🎬 Please select at least one movie for hybrid recommendations.")
+                title_prefix = "👥 Personalized Recommendations"
+                if not user_id:
+                    st.warning("Please enter a valid user ID.")
                 else:
-                    user_movie_ids = movies_df[movies_df["title"].isin(selected_movies)]["movieId"].tolist()
-                    recommendations = recommender.hybrid_recommend(user_id, user_movie_ids, top_n=10, alpha=alpha)
-                    
-                    if not recommendations.empty:
-                        st.markdown('<div class="section-header">🚀 HYBRID INTELLIGENCE RECOMMENDATIONS</div>', unsafe_allow_html=True)
-                        st.markdown(f"<div style='text-align: center; color: #b0b0b0; margin-bottom: 2rem;'>Powered by advanced AI combining multiple algorithms</div>", unsafe_allow_html=True)
-                        
-                        for idx, row in recommendations.iterrows():
-                            pred_rating = row.get('pred_rating', 4.0)
-                            
-                            st.markdown(f"""
-                            <div class="recommendation-card">
-                                <div class="movie-title">{row['title']}</div>
-                                <div class="movie-genres">{row['genres']}</div>
-                                <div style='display: flex; justify-content: space-between; align-items: center;'>
-                                    <div class="movie-rating">
-                                        ⭐ {pred_rating:.2f}/5.00
-                                    </div>
-                                    <div style='display: flex; gap: 1rem;'>
-                                        <span style='color: #ff6b6b; font-size: 0.8rem;'>🎯 Content</span>
-                                        <span style='color: #4ecdc4; font-size: 0.8rem;'>👥 Collaborative</span>
-                                    </div>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-        
+                    recs = recommender.collaborative_recommend(int(user_id), k=10)
+
+            else:  # Hybrid
+                title_prefix = "🚀 Hybrid AI Recommendations"
+                if not selected_movies or not user_id:
+                    st.warning(
+                        "Select at least one movie and provide a user ID for hybrid mode."
+                    )
+                else:
+                    ids = movies_df[movies_df["title"].isin(selected_movies)][
+                        "movieId"
+                    ].tolist()
+                    recs = recommender.hybrid_recommend(
+                        int(user_id), ids, top_n=10, alpha=alpha
+                    )
+
+            if recs is not None and not recs.empty:
+                st.markdown(
+                    f"<h2 style='color:#4ecdc4;'>{title_prefix}</h2>",
+                    unsafe_allow_html=True,
+                )
+
+                # Build the entire horizontal row HTML as a single flat string
+                row_html = '<div class="rec-row-wrapper"><div class="rec-row">'
+                for idx, row in recs.iterrows():
+                    title = str(row["title"])
+                    genres = str(row["genres"])
+                    rating = float(row.get("pred_rating", 4.0))
+                    poster_url = get_poster_url(title)
+
+                    if poster_url:
+                        img_html = "<img src='" + poster_url + "' alt='Poster' />"
+                    else:
+                        img_html = ""
+
+                    card_html = (
+                        f"<div class='rec-card' style='animation-delay:{idx*0.08}s'>"
+                        "<div class='rec-poster'>"
+                        f"{img_html}"
+                        "</div>"
+                        "<div class='rec-body'>"
+                        "<div>"
+                        f"<div class='movie-title'>{title}</div>"
+                        f"<div class='movie-genres'>{genres}</div>"
+                        "</div>"
+                        "<div style='display:flex;justify-content:space-between;align-items:center;margin-top:0.25rem;'>"
+                        f"<div class='movie-rating'>⭐ {rating:.2f}/5</div>"
+                        "<div class='movie-meta-sub'><span class='pill'>AI match</span></div>"
+                        "</div>"
+                        "</div>"
+                        "</div>"
+                    )
+                    row_html += card_html
+
+                row_html += "</div></div>"
+
+                st.markdown(row_html, unsafe_allow_html=True)
+            else:
+                st.info("No recommendations to display yet. Try adjusting your inputs.")
         except Exception as e:
-            st.error(f"❌ Error generating recommendations: {str(e)}")
+            st.error(f"❌ Error generating recommendations: {e}")
 
-else:
-    st.markdown("""
-    </div>
-    """, unsafe_allow_html=True)
-
-# Footer
-st.markdown("""
-<div class="footer">
-    <div style='font-size: 1.1rem; margin-bottom: 1rem;'>
-        <span class="neon-text">CINEMATIC AI</span> • Your Personal Movie Discovery Engine
-    </div>
-    <div style='color: #666;'>
-        Powered by TF-IDF • SVD • Hybrid Machine Learning Models<br>
-        Trained on 1,000,000+ ratings from MovieLens 1M Dataset<br>
-        🎬 Lights, Camera, AI Action! 🍿
+# -------------------------------------------------------------------
+# FOOTER + RANDOM QUOTE
+# -------------------------------------------------------------------
+st.markdown(
+    """
+<div style='text-align:center;color:#9ca3af;margin-top:2.5rem;padding-top:1.2rem;border-top:1px solid rgba(148,163,184,0.4);'>
+    <div style='font-size:1rem;margin-bottom:0.3rem;'>
+        <span style='color:#4ecdc4;'>CINEMATIC AI</span> • TF-IDF • SVD • Hybrid ML • MovieLens 1M
     </div>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
-# Add some movie quotes for fun
-movie_quotes = [
+quotes = [
     "“May the Force be with your movie choices.”",
-    "“Here's looking at you, movie lover.”", 
-    "“You're gonna need a bigger watchlist.”",
-    "“I'll be back with more recommendations.”",
-    "“You had me at hello movie night.”"
+    "“You’re gonna need a bigger watchlist.”",
+    "“I’ll be back… with more recommendations.”",
+    "“Roads? Where we’re going, we don’t need roads. Just popcorn.”",
 ]
-
-st.markdown(f"""
-<div style='
-    text-align: center;
-    color: #666;
-    font-style: italic;
-    margin-top: 2rem;
-    padding: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-'>
-    {random.choice(movie_quotes)}
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    "<div style='text-align:center;color:#6b7280;font-style:italic;margin-top:0.6rem;'>"
+    f"{random.choice(quotes)}"
+    "</div>",
+    unsafe_allow_html=True,
+)
