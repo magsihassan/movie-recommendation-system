@@ -1,0 +1,28 @@
+                                                                                       # Movie Recommendation System - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core Data Science
+numpy>=1.26.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# Recommendation Engine
+scikit-surprise>=1.1.3
+
+# NLP & Text Processing
+nltk>=3.8.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Web Application
+streamlit>=1.28.0
+
+# API Requests (for TMDB posters)
+requests>=2.31.0
+
+# Utilities
+tqdm>=4.65.0
+joblib>=1.3.0

@@ -32,3 +32,6 @@ Thumbs.db
 # Ignore logs
 *.log
 
+# Streamlit secrets (contains API keys)
+.streamlit/secrets.toml
+

@@ -34,15 +34,15 @@ class MovieRecommender:
             # Load SVD model
             with open(os.path.join(models_dir, "svd_algo.pkl"), 'rb') as f:
                 self.svd_model = pickle.load(f)
-            print("✓ SVD model loaded successfully")
+            print("[OK] SVD model loaded successfully")
             
             # Load TF-IDF model
             with open(os.path.join(models_dir, "tfidf.pkl"), 'rb') as f:
                 self.tfidf_model = pickle.load(f)
-            print("✓ TF-IDF model loaded successfully")
+            print("[OK] TF-IDF model loaded successfully")
                 
         except Exception as e:
-            print(f"✗ Error loading models: {e}")
+            print(f"[ERROR] Error loading models: {e}")
             raise
     
     def load_and_preprocess_data(self):
@@ -69,8 +69,8 @@ class MovieRecommender:
             
             # Create TF-IDF matrix using the loaded model
             self.tfidf_matrix = self.tfidf_model.transform(self.movies_df['text_for_tfidf'])
-            print("✓ TF-IDF matrix created successfully")
-            print(f"✓ Loaded {len(self.movies_df)} movies")
+            print("[OK] TF-IDF matrix created successfully")
+            print(f"[OK] Loaded {len(self.movies_df)} movies")
             
         except Exception as e:
             print(f"Error loading data: {e}")

@@ -46,7 +46,7 @@ def load_movies():
             
         # Last resort: read with error handling
         print("Trying with error handling...")
-        movies = pd.read_csv(movies_path, encoding='latin-1', error_bad_lines=False, warn_bad_lines=True)
+        movies = pd.read_csv(movies_path, encoding='latin-1', on_bad_lines='warn')
         return movies
         
     except Exception as e:

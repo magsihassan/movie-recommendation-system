@@ -38,13 +38,17 @@ movies_df = load_movie_data()
 # -------------------------------------------------------------------
 # TMDB POSTER HELPER (OPTIONAL)
 # -------------------------------------------------------------------
-TMDB_API_KEY = "733a194c5a85ab47618704e56b14ebff"
+# API key is loaded from .streamlit/secrets.toml or environment variable
+# See .streamlit/secrets.toml.example for setup instructions
+TMDB_API_KEY = None
 
-# Allow Streamlit secrets or env variables to override only if they exist.
 try:
-    TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", TMDB_API_KEY)
+    TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", None)
 except Exception:
-    TMDB_API_KEY = os.getenv("TMDB_API_KEY", TMDB_API_KEY)
+    pass
+
+if not TMDB_API_KEY:
+    TMDB_API_KEY = os.getenv("TMDB_API_KEY", None)
 
 # -----------------------------------------------------------
 # 🔥 TMDB TITLE NORMALIZATION + BEST-MATCH POSTER FETCH
@@ -119,6 +123,78 @@ def get_poster_url(movie_title: str):
     except Exception:
         return None
 
+@st.cache_data(show_spinner=False)
+def get_movie_details(movie_title: str):
+    """Fetch movie details including trailer from TMDB."""
+    if not TMDB_API_KEY:
+        return None
+    
+    clean_title, year = normalize_title(movie_title)
+    
+    try:
+        # Search for movie
+        params = {"api_key": TMDB_API_KEY, "query": clean_title}
+        if year:
+            params["year"] = year
+        
+        resp = requests.get(
+            "https://api.themoviedb.org/3/search/movie",
+            params=params,
+            timeout=6,
+        )
+        resp.raise_for_status()
+        
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+        
+        # Get best match
+        results = sorted(
+            results,
+            key=lambda x: (x.get("vote_count", 0), x.get("popularity", 0)),
+            reverse=True,
+        )
+        movie = results[0]
+        movie_id = movie.get("id")
+        
+        # Fetch movie details with videos
+        details_resp = requests.get(
+            f"https://api.themoviedb.org/3/movie/{movie_id}",
+            params={"api_key": TMDB_API_KEY, "append_to_response": "videos,credits"},
+            timeout=6,
+        )
+        details_resp.raise_for_status()
+        details = details_resp.json()
+        
+        # Extract trailer (prefer YouTube trailers)
+        trailer_key = None
+        videos = details.get("videos", {}).get("results", [])
+        for video in videos:
+            if video.get("site") == "YouTube" and video.get("type") == "Trailer":
+                trailer_key = video.get("key")
+                break
+        
+        # Get top cast
+        cast = details.get("credits", {}).get("cast", [])[:5]
+        cast_names = [c.get("name") for c in cast if c.get("name")]
+        
+        return {
+            "id": movie_id,
+            "title": details.get("title", movie_title),
+            "overview": details.get("overview", "No description available."),
+            "poster_path": details.get("poster_path"),
+            "backdrop_path": details.get("backdrop_path"),
+            "release_date": details.get("release_date", ""),
+            "runtime": details.get("runtime", 0),
+            "vote_average": details.get("vote_average", 0),
+            "vote_count": details.get("vote_count", 0),
+            "genres": [g.get("name") for g in details.get("genres", [])],
+            "trailer_key": trailer_key,
+            "cast": cast_names,
+        }
+    except Exception:
+        return None
+
 # -------------------------------------------------------------------
 # PAGE CONFIG
 # -------------------------------------------------------------------
@@ -130,26 +206,56 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------------
-# GLOBAL CSS  (full, with glow + Netflix row)
+# THEME STATE MANAGEMENT
 # -------------------------------------------------------------------
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
+
+if "selected_movie_for_details" not in st.session_state:
+    st.session_state.selected_movie_for_details = None
+
+def toggle_theme():
+    st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
+
+is_dark = st.session_state.theme == "dark"
+
+# -------------------------------------------------------------------
+# GLOBAL CSS  (with theme support, animations, skeleton, modal)
+# -------------------------------------------------------------------
+# Theme colors
+if is_dark:
+    theme_bg = "radial-gradient(circle at top, #1a1a2e 0, #0b0c10 45%, #000 100%)"
+    theme_text = "#ffffff"
+    theme_card_bg = "rgba(16, 24, 40, 0.9)"
+    theme_border = "rgba(148,163,184,0.4)"
+    theme_subtitle = "#b0b0b0"
+    theme_secondary = "#9ca3af"
+else:
+    theme_bg = "linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)"
+    theme_text = "#1a1a2e"
+    theme_card_bg = "rgba(255, 255, 255, 0.95)"
+    theme_border = "rgba(0,0,0,0.15)"
+    theme_subtitle = "#4b5563"
+    theme_secondary = "#6b7280"
+
 st.markdown(
-    """
+    f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Exo+2:wght@300;400;600&display=swap');
 
-body {
-    background: radial-gradient(circle at top, #1a1a2e 0, #0b0c10 45%, #000 100%);
-    color: #ffffff;
+body {{
+    background: {theme_bg};
+    color: {theme_text};
     font-family: 'Exo 2', sans-serif;
-}
+}}
 
-.app-container {
+.app-container {{
     max-width: 1200px;
     margin: 0 auto;
-}
+}}
 
 /* MAIN HEADER */
-.neon-header {
+.neon-header {{
     font-family: 'Orbitron', sans-serif;
     font-size: 3.5rem;
     font-weight: 800;
@@ -160,33 +266,34 @@ body {
         0 0 30px rgba(78,205,196,0.7);
     letter-spacing: 2px;
     animation: hdr-pulse 3s ease-in-out infinite alternate;
-}
+}}
 
-.neon-subtitle {
-    color: #b0b0b0;
+
+.neon-subtitle {{
+    color: {theme_subtitle};
     font-size: 1.1rem;
-}
+}}
 
-@keyframes hdr-pulse {
-    0% { text-shadow: 0 0 6px rgba(78,205,196,0.5); }
-    100% { text-shadow: 0 0 24px rgba(78,205,196,0.9); }
-}
+@keyframes hdr-pulse {{
+    0%% {{ text-shadow: 0 0 6px rgba(78,205,196,0.5); }}
+    100%% {{ text-shadow: 0 0 24px rgba(78,205,196,0.9); }}
+}}
 
 /* SECTION HEADER */
-.section-header {
+.section-header {{
     font-family: 'Orbitron', sans-serif;
     font-size: 1.7rem;
     color: #4ecdc4;
     text-align: center;
     margin: 1.5rem 0 1rem 0;
     text-shadow: 0 0 8px rgba(78,205,196,0.8);
-}
+}}
 
 /* MODEL CARDS */
-.model-card {
-    background: rgba(16, 24, 40, 0.9);
+.model-card {{
+    background: {theme_card_bg};
     border-radius: 18px;
-    border: 1px solid rgba(148,163,184,0.4);
+    border: 1px solid {theme_border};
     padding: 1.2rem 1.3rem;
     margin-bottom: 1.1rem;
     backdrop-filter: blur(14px);
@@ -196,143 +303,129 @@ body {
     transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
     transform-style: preserve-3d;
     transform-origin: center;
-}
+}}
 
-.model-card:hover {
+.model-card:hover {{
     transform: translateY(-6px) rotate3d(1, -1, 0, 6deg);
     box-shadow:
         0 0 0 1px rgba(94,234,212,0.4),
         0 18px 55px rgba(56,189,248,0.55);
     border-color: #4ecdc4;
     cursor: pointer;
-}
+}}
 
-.model-card.selected {
+.model-card.selected {{
     border-color: #ff6b6b;
     box-shadow:
         0 0 0 1px rgba(248,113,113,0.6),
         0 18px 60px rgba(248,113,113,0.85);
     animation: neon-pulse 2.2s ease-in-out infinite alternate;
-}
+}}
 
-@keyframes neon-pulse {
-    0% {
+@keyframes neon-pulse {{
+    0%% {{
         box-shadow:
             0 0 0 1px rgba(248,113,113,0.4),
             0 14px 40px rgba(248,113,113,0.5);
-    }
-    100% {
+    }}
+    100%% {{
         box-shadow:
             0 0 0 2px rgba(248,113,113,0.7),
             0 18px 64px rgba(248,113,113,0.9);
-    }
-}
+    }}
+}}
 
-.model-icon {
+.model-icon {{
     font-size: 2.4rem;
     margin-bottom: 0.4rem;
-}
+}}
 
-.model-title {
+.model-title {{
     font-family: 'Orbitron';
     font-size: 1.3rem;
     font-weight: 700;
     color: #e5e7eb;
     margin-bottom: 0.2rem;
-}
+}}
 
-.model-desc {
+.model-desc {{
     font-size: 0.9rem;
-    color: #9ca3af;
-}
+    color: {theme_secondary};
+}}
 
 /* HORIZONTAL RECOMMENDATION ROW */
-.rec-row-wrapper {
+.rec-row-wrapper {{
     position: relative;
     margin-top: 1rem;
-}
+}}
 
-.rec-row {
+.rec-row {{
     display: flex;
     overflow-x: auto;
     gap: 1rem;
     padding-bottom: 0.5rem;
     scroll-behavior: smooth;
-}
+}}
 
-.rec-row::-webkit-scrollbar {
+.rec-row::-webkit-scrollbar {{
     height: 8px;
-}
-.rec-row::-webkit-scrollbar-track {
+}}
+.rec-row::-webkit-scrollbar-track {{
     background: rgba(15,23,42,0.9);
-}
-.rec-row::-webkit-scrollbar-thumb {
+}}
+.rec-row::-webkit-scrollbar-thumb {{
     background: linear-gradient(90deg, #4ecdc4, #ff6b6b);
     border-radius: 999px;
-}
+}}
 
-.rec-card {
-    flex: 0 0 300px;
-    max-width: 220px;
-    height: 500px;  
-    background: radial-gradient(circle at top left, rgba(56,189,248,0.16), rgba(15,23,42,0.96));
-    border-radius: 16px;
-    border: 1px solid rgba(148,163,184,0.4);
-    overflow: hidden;
-    box-shadow: 0 14px 40px rgba(15,23,42,0.9);
-    backdrop-filter: blur(10px);
-    display: flex;
-    flex-direction: column;
-}
-
-.rec-poster {
-    width: 100%;
+.rec-poster {{
+    width: 100%%;
     height: 800px;
     background: linear-gradient(135deg, #ff6b6b, #4ecdc4);
     overflow: hidden;
-}
+}}
 
-.rec-poster img {
-    width: 100%;
-    height: 100%;
+.rec-poster img {{
+    width: 100%%;
+    height: 100%%;
     object-fit: cover;
     display: block;
-}
+}}
 
-.rec-body {
+.rec-body {{
     padding: 0.7rem 0.75rem 0.8rem 0.75rem;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    height: 100%;
-}
+    height: 100%%;
+}}
 
-.movie-title {
+.movie-title {{
     font-size: 0.95rem;
     font-weight: 600;
     color: #e5e7eb;
     margin-bottom: 0.2rem;
-}
+}}
 
-.movie-genres {
+.movie-genres {{
     font-size: 0.78rem;
     color: #67e8f9;
     margin-bottom: 0.3rem;
-}
+}}
 
-.movie-rating {
+.movie-rating {{
     font-family: 'Orbitron';
     font-size: 0.85rem;
     color: #facc15;
-}
+}}
 
-.movie-meta-sub {
+.movie-meta-sub {{
     font-size: 0.7rem;
-    color: #9ca3af;
+    color: {theme_secondary};
     text-align: right;
-}
+}}
 
-.pill {
+.pill {{
     display: inline-flex;
     align-items: center;
     border-radius: 999px;
@@ -341,7 +434,252 @@ body {
     background: rgba(15,23,42,0.9);
     color: #e5e7eb;
     border: 1px solid rgba(148,163,184,0.6);
-}
+}}
+
+/* THEME TOGGLE BUTTON */
+.theme-toggle {{
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    z-index: 1000;
+    background: {theme_card_bg};
+    border: 1px solid {theme_border};
+    border-radius: 50%;
+    width: 45px;
+    height: 45px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1.4rem;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+}}
+
+.theme-toggle:hover {{
+    transform: scale(1.1);
+    box-shadow: 0 6px 25px rgba(78,205,196,0.4);
+}}
+
+/* SKELETON LOADING */
+.skeleton {{
+    background: linear-gradient(90deg, 
+        {theme_card_bg} 25%, 
+        rgba(78,205,196,0.2) 50%, 
+        {theme_card_bg} 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite;
+    border-radius: 12px;
+}}
+
+.skeleton-card {{
+    width: 220px;
+    height: 380px;
+    flex: 0 0 220px;
+    border-radius: 16px;
+}}
+
+.skeleton-poster {{
+    height: 280px;
+    border-radius: 16px 16px 0 0;
+}}
+
+.skeleton-text {{
+    height: 16px;
+    margin: 8px 12px;
+    border-radius: 4px;
+}}
+
+.skeleton-text-short {{
+    width: 60%;
+}}
+
+@keyframes skeleton-shimmer {{
+    0% {{ background-position: 200% 0; }}
+    100% {{ background-position: -200% 0; }}
+}}
+
+/* CARD FADE-IN ANIMATION */
+.rec-card {{
+    flex: 0 0 300px;
+    max-width: 220px;
+    height: 500px;  
+    background: radial-gradient(circle at top left, rgba(56,189,248,0.16), rgba(15,23,42,0.96));
+    border-radius: 16px;
+    border: 1px solid {theme_border};
+    overflow: hidden;
+    box-shadow: 0 14px 40px rgba(15,23,42,0.9);
+    backdrop-filter: blur(10px);
+    display: flex;
+    flex-direction: column;
+    animation: card-fade-in 0.5s ease-out forwards;
+    opacity: 0;
+    transform: translateY(20px);
+    cursor: pointer;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}}
+
+.rec-card:hover {{
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 20px 50px rgba(78,205,196,0.3);
+}}
+
+@keyframes card-fade-in {{
+    to {{
+        opacity: 1;
+        transform: translateY(0);
+    }}
+}}
+
+/* MODAL OVERLAY */
+.modal-overlay {{
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.85);
+    backdrop-filter: blur(8px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: modal-fade-in 0.3s ease;
+}}
+
+@keyframes modal-fade-in {{
+    from {{ opacity: 0; }}
+    to {{ opacity: 1; }}
+}}
+
+.modal-content {{
+    background: {theme_card_bg};
+    border-radius: 24px;
+    border: 1px solid {theme_border};
+    max-width: 900px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 25px 80px rgba(0,0,0,0.5);
+    animation: modal-slide-up 0.4s ease;
+}}
+
+@keyframes modal-slide-up {{
+    from {{ transform: translateY(50px); opacity: 0; }}
+    to {{ transform: translateY(0); opacity: 1; }}
+}}
+
+.modal-header {{
+    position: relative;
+    height: 300px;
+    overflow: hidden;
+    border-radius: 24px 24px 0 0;
+}}
+
+.modal-backdrop {{
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}}
+
+.modal-close {{
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    background: rgba(0,0,0,0.7);
+    border: none;
+    color: white;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    font-size: 1.5rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    z-index: 10;
+}}
+
+.modal-close:hover {{
+    background: #ff6b6b;
+    transform: scale(1.1);
+}}
+
+.modal-body {{
+    padding: 1.5rem 2rem 2rem 2rem;
+}}
+
+.modal-title {{
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.8rem;
+    color: #4ecdc4;
+    margin-bottom: 0.5rem;
+}}
+
+.modal-meta {{
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}}
+
+.modal-meta-item {{
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: {theme_secondary};
+    font-size: 0.9rem;
+}}
+
+.modal-overview {{
+    color: {theme_text};
+    line-height: 1.6;
+    margin-bottom: 1.5rem;
+}}
+
+.modal-cast {{
+    color: {theme_secondary};
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+}}
+
+.modal-trailer {{
+    border-radius: 12px;
+    overflow: hidden;
+    margin-top: 1rem;
+}}
+
+.modal-trailer iframe {{
+    width: 100%;
+    height: 400px;
+    border: none;
+}}
+
+/* PROGRESS BAR */
+.progress-container {{
+    width: 100%;
+    height: 6px;
+    background: rgba(15,23,42,0.5);
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 1rem 0;
+}}
+
+.progress-bar {{
+    height: 100%;
+    background: linear-gradient(90deg, #4ecdc4, #ff6b6b, #4ecdc4);
+    background-size: 200% 100%;
+    animation: progress-animate 1.5s linear infinite;
+    border-radius: 999px;
+}}
+
+@keyframes progress-animate {{
+    0% {{ background-position: 0% 0; }}
+    100% {{ background-position: 200% 0; }}
+}}
+
+/* MODE TRANSITION */
+.stApp {{
+    transition: background 0.5s ease;
+}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -350,6 +688,14 @@ body {
 # -------------------------------------------------------------------
 # HEADER
 # -------------------------------------------------------------------
+# Theme toggle button
+theme_icon = "☀️" if is_dark else "🌙"
+col_header1, col_header2, col_header3 = st.columns([1, 4, 1])
+with col_header3:
+    if st.button(theme_icon, key="theme_toggle", help=f"Switch to {'light' if is_dark else 'dark'} mode"):
+        toggle_theme()
+        st.rerun()
+
 st.markdown(
     """
 <div class="app-container" style="text-align:center; margin-bottom: 1.5rem;">
@@ -466,6 +812,22 @@ with col2:
     else:
         alpha = None
 
+    # Genre filtering
+    st.markdown("---")
+    all_genres = set()
+    for genres in movies_df["genres"].dropna():
+        for g in str(genres).split("|"):
+            if g.strip():
+                all_genres.add(g.strip())
+    all_genres = sorted(all_genres)
+    
+    selected_genres = st.multiselect(
+        "🎭 Filter by Genres (optional):",
+        all_genres,
+        placeholder="Select genres to filter...",
+        help="Recommendations will be filtered to include only movies with these genres"
+    )
+
     # Selection gallery
     if selected_movies:
         st.markdown("**Your selection gallery**")
@@ -507,6 +869,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Store recommendations in session state for persistence
+if "recommendations" not in st.session_state:
+    st.session_state.recommendations = None
+if "rec_title_prefix" not in st.session_state:
+    st.session_state.rec_title_prefix = ""
+
 if st.button("🚀 Generate Smart Recommendations", key="generate_btn"):
     with st.spinner("🧠 Letting the AI binge-watch on your behalf..."):
         recs = None
@@ -545,50 +913,136 @@ if st.button("🚀 Generate Smart Recommendations", key="generate_btn"):
                     )
 
             if recs is not None and not recs.empty:
-                st.markdown(
-                    f"<h2 style='color:#4ecdc4;'>{title_prefix}</h2>",
-                    unsafe_allow_html=True,
-                )
-
-                # Build the entire horizontal row HTML as a single flat string
-                row_html = '<div class="rec-row-wrapper"><div class="rec-row">'
-                for idx, row in recs.iterrows():
-                    title = str(row["title"])
-                    genres = str(row["genres"])
-                    rating = float(row.get("pred_rating", 4.0))
-                    poster_url = get_poster_url(title)
-
-                    if poster_url:
-                        img_html = "<img src='" + poster_url + "' alt='Poster' />"
-                    else:
-                        img_html = ""
-
-                    card_html = (
-                        f"<div class='rec-card' style='animation-delay:{idx*0.08}s'>"
-                        "<div class='rec-poster'>"
-                        f"{img_html}"
-                        "</div>"
-                        "<div class='rec-body'>"
-                        "<div>"
-                        f"<div class='movie-title'>{title}</div>"
-                        f"<div class='movie-genres'>{genres}</div>"
-                        "</div>"
-                        "<div style='display:flex;justify-content:space-between;align-items:center;margin-top:0.25rem;'>"
-                        f"<div class='movie-rating'>⭐ {rating:.2f}/5</div>"
-                        "<div class='movie-meta-sub'><span class='pill'>AI match</span></div>"
-                        "</div>"
-                        "</div>"
-                        "</div>"
-                    )
-                    row_html += card_html
-
-                row_html += "</div></div>"
-
-                st.markdown(row_html, unsafe_allow_html=True)
+                # Apply genre filter if genres are selected
+                if selected_genres:
+                    def has_genre(movie_genres, filter_genres):
+                        movie_genre_set = set(str(movie_genres).split("|"))
+                        return any(g in movie_genre_set for g in filter_genres)
+                    
+                    recs = recs[recs["genres"].apply(lambda x: has_genre(x, selected_genres))]
+                    
+                    if recs.empty:
+                        st.warning(f"No recommendations found matching genres: {', '.join(selected_genres)}. Try removing some genre filters.")
+                
+                # Store in session state
+                st.session_state.recommendations = recs.reset_index(drop=True)
+                st.session_state.rec_title_prefix = title_prefix
             else:
                 st.info("No recommendations to display yet. Try adjusting your inputs.")
         except Exception as e:
-            st.error(f"❌ Error generating recommendations: {e}")
+            st.error(f"Error generating recommendations: {e}")
+
+# -------------------------------------------------------------------
+# DISPLAY RECOMMENDATIONS IN GRID
+# -------------------------------------------------------------------
+if st.session_state.recommendations is not None and not st.session_state.recommendations.empty:
+    recs = st.session_state.recommendations
+    title_prefix = st.session_state.rec_title_prefix
+    
+    st.markdown(
+        f"<h2 style='color:#4ecdc4; text-align:center;'>{title_prefix}</h2>",
+        unsafe_allow_html=True,
+    )
+    
+    # Grid layout - 5 columns
+    num_cols = 5
+    rec_list = recs.head(10).to_dict('records')
+    
+    for row_start in range(0, len(rec_list), num_cols):
+        cols = st.columns(num_cols)
+        for col_idx, col in enumerate(cols):
+            rec_idx = row_start + col_idx
+            if rec_idx < len(rec_list):
+                movie = rec_list[rec_idx]
+                title = str(movie["title"])
+                genres = str(movie["genres"])
+                rating = float(movie.get("pred_rating", 4.0))
+                poster_url = get_poster_url(title)
+                
+                with col:
+                    # Movie card with poster
+                    if poster_url:
+                        st.image(poster_url, use_container_width=True)
+                    else:
+                        st.markdown(
+                            "<div style='height:200px;background:linear-gradient(135deg,#ff6b6b,#4ecdc4);"
+                            "border-radius:12px;display:flex;align-items:center;justify-content:center;"
+                            "font-size:3rem;'>🎬</div>",
+                            unsafe_allow_html=True
+                        )
+                    
+                    # Title and info
+                    st.markdown(f"**{title[:25]}{'...' if len(title) > 25 else ''}**")
+                    st.caption(f"🎭 {genres[:30]}{'...' if len(genres) > 30 else ''}")
+                    st.markdown(f"⭐ **{rating:.1f}**/5")
+                    
+                    # Details button
+                    if st.button("🎬 Details & Trailer", key=f"details_{rec_idx}", use_container_width=True):
+                        st.session_state.selected_movie_for_details = title
+
+# -------------------------------------------------------------------
+# MOVIE DETAILS MODAL
+# -------------------------------------------------------------------
+if st.session_state.selected_movie_for_details:
+    movie_title = st.session_state.selected_movie_for_details
+    
+    st.markdown("---")
+    st.markdown(f"## 🎬 {movie_title}")
+    
+    # Fetch details from TMDB
+    details = get_movie_details(movie_title)
+    
+    if details:
+        col_poster, col_info = st.columns([1, 2])
+        
+        with col_poster:
+            if details.get("poster_path"):
+                st.image(f"https://image.tmdb.org/t/p/w500{details['poster_path']}", use_container_width=True)
+            else:
+                st.markdown(
+                    "<div style='height:400px;background:linear-gradient(135deg,#ff6b6b,#4ecdc4);"
+                    "border-radius:12px;display:flex;align-items:center;justify-content:center;"
+                    "font-size:5rem;'>🎬</div>",
+                    unsafe_allow_html=True
+                )
+        
+        with col_info:
+            # Movie meta info
+            meta_items = []
+            if details.get("release_date"):
+                meta_items.append(f"📅 {details['release_date'][:4]}")
+            if details.get("runtime"):
+                meta_items.append(f"⏱️ {details['runtime']} min")
+            if details.get("vote_average"):
+                meta_items.append(f"⭐ {details['vote_average']:.1f}/10 ({details.get('vote_count', 0)} votes)")
+            
+            if meta_items:
+                st.markdown(f"### {' • '.join(meta_items)}")
+            
+            if details.get("genres"):
+                st.markdown(f"**🎭 Genres:** {', '.join(details['genres'])}")
+            
+            st.markdown("### 📖 Overview")
+            st.write(details.get("overview", "No description available."))
+            
+            if details.get("cast"):
+                st.markdown(f"**🎭 Cast:** {', '.join(details['cast'])}")
+        
+        # Trailer section
+        if details.get("trailer_key"):
+            st.markdown("### 🎥 Watch Trailer")
+            st.video(f"https://www.youtube.com/watch?v={details['trailer_key']}")
+        else:
+            st.info("🎬 No trailer available for this movie.")
+    else:
+        st.warning("Could not fetch movie details. Make sure TMDB API key is configured in `.streamlit/secrets.toml`")
+    
+    # Close button
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        if st.button("✖️ Close Details", key="close_modal", use_container_width=True):
+            st.session_state.selected_movie_for_details = None
+            st.rerun()
 
 # -------------------------------------------------------------------
 # FOOTER + RANDOM QUOTE
